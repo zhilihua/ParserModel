@@ -231,7 +231,6 @@ if __name__ == '__main__':
 
     for ix, image in enumerate(images):
         label = labels[ix]
-        print(label)
         plt.imshow(image)
         for lab in label:
             rect = plt.Rectangle((lab[1], lab[2]), lab[3] - lab[1],
