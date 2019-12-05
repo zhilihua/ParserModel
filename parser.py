@@ -8,6 +8,9 @@ import os
 from bs4 import BeautifulSoup
 from PIL import Image
 import pickle
+import sklearn.utils
+from copy import deepcopy
+from utils import BoxFilter
 
 class DataGenerator:
     def __init__(self,
@@ -196,6 +199,122 @@ class DataGenerator:
                     self.images.append(np.array(image, dtype=np.uint8))
 
         return self.images, self.labels
+
+    def generate(self,
+                 batch_size=32,
+                 shuffle=True,
+                 transformations=[],
+                 label_encoder=None
+                 ):
+
+        #############################################################################################
+        # 对数据进行打乱
+        #############################################################################################
+        if shuffle:
+            objects_to_shuffle = [self.dataset_indices]
+            if not (self.filenames is None):
+                objects_to_shuffle.append(self.filenames)
+            if not (self.labels is None):
+                objects_to_shuffle.append(self.labels)
+            if not (self.image_ids is None):
+                objects_to_shuffle.append(self.image_ids)
+            if not (self.eval_neutral is None):
+                objects_to_shuffle.append(self.eval_neutral)
+            shuffled_objects = sklearn.utils.shuffle(*objects_to_shuffle)
+            for i in range(len(objects_to_shuffle)):
+                objects_to_shuffle[i][:] = shuffled_objects[i]
+
+        box_filter = BoxFilter(check_overlap=False,
+                               check_min_area=False,
+                               check_degenerate=True,
+                               labels_format=self.labels_format)
+
+        if not (self.labels is None):
+            for transform in transformations:
+                transform.labels_format = self.labels_format
+
+        #############################################################################################
+        # 生成最小批次
+        #############################################################################################
+        current = 0
+
+        while True:
+            batch_X, batch_y = [], []
+            if current >= self.dataset_size:
+                current = 0
+                #########################################################################################
+                # 数据循环完一轮后重新shuffle
+                #########################################################################################
+                if shuffle:
+                    objects_to_shuffle = [self.dataset_indices]
+                    if not (self.filenames is None):
+                        objects_to_shuffle.append(self.filenames)
+                    if not (self.labels is None):
+                        objects_to_shuffle.append(self.labels)
+                    if not (self.image_ids is None):
+                        objects_to_shuffle.append(self.image_ids)
+                    if not (self.eval_neutral is None):
+                        objects_to_shuffle.append(self.eval_neutral)
+                    shuffled_objects = sklearn.utils.shuffle(*objects_to_shuffle)
+                    for i in range(len(objects_to_shuffle)):
+                        objects_to_shuffle[i][:] = shuffled_objects[i]
+
+            batch_filenames = self.filenames[current:current + batch_size]
+            for filename in batch_filenames:
+                with Image.open(filename) as image:
+                    batch_X.append(np.array(image, dtype=np.uint8))
+
+            if not (self.labels is None):
+                batch_y = deepcopy(self.labels[current:current + batch_size])
+            else:
+                batch_y = None
+
+            current += batch_size
+
+            for i in range(len(batch_X)):
+                if not (self.labels is None):
+                    batch_y[i] = np.array(batch_y[i])
+
+                # 应用我们得到的图片增广
+                if transformations:
+                    for transform in transformations:
+                        if not (self.labels is None):
+                            batch_X[i], batch_y[i] = transform(batch_X[i], batch_y[i])
+                        else:
+                            batch_X[i] = transform(batch_X[i])
+
+                if not (self.labels is None):
+
+                    xmin = self.labels_format['xmin']
+                    ymin = self.labels_format['ymin']
+                    xmax = self.labels_format['xmax']
+                    ymax = self.labels_format['ymax']
+
+                    if np.any(batch_y[i][:, xmax] - batch_y[i][:, xmin] <= 0) or \
+                            np.any(batch_y[i][:, ymax] - batch_y[i][:, ymin] <= 0):  # 对错误的包围框进行过滤
+                        batch_y[i] = box_filter(batch_y[i])
+
+            batch_X = np.array(batch_X)
+            #########################################################################################
+            # 如果有标签编码器，编码我们的标签
+            #########################################################################################
+
+            if not (label_encoder is None or self.labels is None):
+                batch_y_encoded = label_encoder(batch_y, diagnostics=False)
+            else:
+                batch_y_encoded = None
+
+            ret = []
+            ret.append(batch_X)
+            ret.append(batch_y_encoded)
+
+            yield tuple(ret)
+
+    def get_dataset(self):
+        return self.filenames, self.labels, self.image_ids, self.eval_neutral
+
+    def get_dataset_size(self):
+        return self.dataset_size
 
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
